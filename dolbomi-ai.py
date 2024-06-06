@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from pymongo import MongoClient
 import datetime
+# 초기 생성
 
 # MongoDB 설정
 dbclient = MongoClient("mongodb://localhost:27017/")

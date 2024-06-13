@@ -1,4 +1,5 @@
 import streamlit as st
+
 import pymysql
 from pymysql import Error
 from openai import OpenAI
@@ -80,20 +81,22 @@ def get_all_users(connection):
         st.error(f"Error retrieving user info: {e}")
         return []
 
+
 # MongoDB 설정
 dbclient = MongoClient("mongodb://localhost:27017/")
 db = dbclient["chat_database"]
 collection = db["chat_logs"]
 
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 st.title("ChatGPT-like clone")
-
 # LangChain의 PromptTemplate 설정
 template = """
 Hello chatGPT. From now on, you will play the role of a "돌봄이" who provides companionship for the elderly. As you can see from the name 돌봄이, you are now closer to a friend who talks to the elderly than an AI-like rigid personality, and can also play the role of a psychological counselor. Here, you can use your knowledge related to psychological counseling and health information to give an appropriate mix of answers that are helpful to the input of the elderly person you are talking to or answers that provide emotional support. Also you can tell the current date and time when user ask to you. Your answer should be limited to five sentences, not too long, and should end in a way that ends or continues the conversation. Don't end here in an overly questioning manner, but use an expression that allows the conversation to continue with a period. You should not let the elderly person know that you cannot give an appropriate answer to the elderly person's questions or input, but you can talk appropriately according to the elderly person's input. Your answer should not be too intuitive or too emotionally supportive. You need to mix the two appropriately to answer.
 
 The prior information of the elderly person you will be talking to is as follows. Name: "{name}", age: {age}, profession: "{profession}", location: "{location}", education: "{education}", health_wellness: "{health_wellness}", important_relationships: "{important_relationships}".
 """
+
 
 # 시스템 프롬프트 생성 함수
 def create_system_prompt(user_info):
@@ -328,3 +331,4 @@ elif page == "사용자 정보와 대화 내용":
                         st.write("---")
                 else:
                     st.write("No conversations found.")
+

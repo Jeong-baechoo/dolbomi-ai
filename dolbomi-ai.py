@@ -2,8 +2,6 @@ import streamlit as st
 import pymysql
 from pymysql import Error
 from openai import OpenAI
-import speech_recognition as sr
-from pydub import AudioSegment
 from pathlib import Path
 import time
 from langchain.chains.conversation.base import ConversationChain
@@ -15,6 +13,7 @@ import datetime
 import pandas as pd
 import os
 from dotenv import load_dotenv
+from pydub import AudioSegment
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -98,25 +97,10 @@ The prior information of the elderly person you will be talking to is as follows
 # 시스템 프롬프트 생성 함수
 def create_system_prompt(user_info):
     prompt = PromptTemplate.from_template(template)
-    return prompt.format(**user_info)
-
-# 음성 인식 함수
-def recognize_speech_from_mic():
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        st.sidebar.write("Listening...")
-        audio = recognizer.listen(source)
-        st.sidebar.write("Recognizing...")
-        try:
-            text = recognizer.recognize_google(audio, language="ko-KR")
-            st.sidebar.write(f"Recognized Text: {text}")
-            return text
-        except sr.UnknownValueError:
-            st.sidebar.write("Google Speech Recognition could not understand audio")
-            return ""
-        except sr.RequestError:
-            st.sidebar.write("Could not request results from Google Speech Recognition service")
-            return ""
+    formatted_prompt = prompt.format(**user_info)
+    st.write("Generated Prompt:")
+    st.write(formatted_prompt)
+    return formatted_prompt
 
 # 텍스트를 음성으로 변환하는 함수
 def text_to_speech(text, file_path):
@@ -225,12 +209,16 @@ elif page == "대화":
                 if "conversing" not in st.session_state:
                     st.session_state["conversing"] = False     
 
-                # 새로운 사용자를 선택했을 때 메시지 초기화
+                # 새로운 사용자를 선택했을 때 메시지 초기화 및 대화 기록 불러오기
                 if "selected_user" not in st.session_state or st.session_state.selected_user != selected_user_name:
                     st.session_state.selected_user = selected_user_name
                     st.session_state.messages = [
                         {"role": "system", "content": SYSTEM_PROMPT}
                     ]
+                    st.session_state['conversing'] = False
+
+                    # MongoDB에서 대화 기록 불러오기
+                    st.session_state.conversation_history = get_conversation_by_user_id(selected_user['user_id'])
 
                 if st.button("Start Conversation"):
                     st.session_state['conversing'] = True
@@ -247,36 +235,47 @@ elif page == "대화":
 
                 if st.session_state['conversing']:
                     user_id = selected_user['user_id']
-                    recognized_text = recognize_speech_from_mic()
-                    # 유저
-                    st.session_state.messages.append({"role": "user", "content": recognized_text})
-                    with st.chat_message("user"):
-                        st.markdown(recognized_text)
+                    user_input = st.text_input("Enter your message:")
+                    if st.button("Send"):
+                        if user_input:
+                            # 유저
+                            st.session_state.messages.insert(0, {"role": "user", "content": user_input})
+                            with st.chat_message("user"):
+                                st.markdown(user_input)
 
-                    # LangChain을 사용한 챗봇 응답
-                    assistant_response = conversation.predict(input=recognized_text)
-                    with st.chat_message("assistant"):
-                        st.markdown(assistant_response)
-                        # 응답을 음성으로 변환 및 저장
-                        audio_file_path = Path("response.mp3")
-                        text_to_speech(assistant_response, audio_file_path)
+                            # LangChain을 사용한 챗봇 응답
+                            assistant_response = conversation.predict(input=user_input)
+                            st.write("AI Response:")
+                            st.write(assistant_response)
+                            with st.chat_message("assistant"):
+                                st.markdown(assistant_response)
+                                # 응답을 음성으로 변환 및 저장
+                                audio_file_path = Path("response.mp3")
+                                text_to_speech(assistant_response, audio_file_path)
 
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                    # MongoDB에 대화 저장
-                    save_to_mongo(user_id, recognized_text, assistant_response)
-                    
-                    # 오디오 재생
-                    st.audio(str(audio_file_path), autoplay=True)
-                    audio_length = get_audio_length(audio_file_path)
-                    time.sleep(audio_length)
-                    st.experimental_rerun()
+                            st.session_state.messages.insert(0, {"role": "assistant", "content": assistant_response})
+                            
+                            # MongoDB에 대화 저장
+                            save_to_mongo(user_id, user_input, assistant_response)
+                            
+                            # 오디오 재생
+                            st.audio(str(audio_file_path), autoplay=True)
+                            audio_length = get_audio_length(audio_file_path)
+                            time.sleep(audio_length)
+                            st.experimental_rerun()
 
-                # 기존 대화 내용을 출력
-                for message in st.session_state.messages:
+                # 기존 대화 내용을 역순으로 출력
+                for message in reversed(st.session_state.messages):
                     if message["role"] != "system":
                         with st.chat_message(message["role"]):
                             st.markdown(message["content"])
+
+                # MongoDB에서 불러온 대화 기록을 출력
+                for convo in st.session_state.conversation_history:
+                    with st.chat_message("user"):
+                        st.markdown(convo["user_input"])
+                    with st.chat_message("assistant"):
+                        st.markdown(convo["bot_response"])
 
 # 사용자 정보와 대화 내용 탭
 elif page == "사용자 정보와 대화 내용":
@@ -316,7 +315,9 @@ elif page == "사용자 정보와 대화 내용":
                 if mongo_conversations:
                     # 대화 기록에서 날짜 추출
                     dates = sorted(list(set([convo["timestamp"].date() for convo in mongo_conversations])))
-                    selected_date = st.selectbox("날짜 선택", dates)
+                    
+                    # 최신 날짜를 기본값으로 설정
+                    selected_date = st.selectbox("날짜 선택", dates, index=len(dates)-1)
                     
                     # 선택한 날짜의 대화만 필터링
                     selected_conversations = [convo for convo in mongo_conversations if convo["timestamp"].date() == selected_date]

@@ -1,29 +1,92 @@
 import streamlit as st
+import pymysql
+from pymysql import Error
 from openai import OpenAI
 import speech_recognition as sr
 from pydub import AudioSegment
 from pathlib import Path
 import time
-import os
-from dotenv import load_dotenv
 from langchain.chains.conversation.base import ConversationChain
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from pymongo import MongoClient
 import datetime
-import pymysql
-from pymysql import Error
+import pandas as pd
+import os
+from dotenv import load_dotenv
 
-print("dolbomi")
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# MySQL 연결 설정
+def create_connection():
+    try:
+        connection = pymysql.connect(
+            host="127.0.0.1",
+            user="root",
+            password="1234",
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        return connection
+    except Error as e:
+        st.error(f"Error connecting to MySQL: {e}")
+        return None
+
+# 데이터베이스와 테이블 생성
+def create_database_and_table(connection):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE DATABASE IF NOT EXISTS user_info")
+            cursor.execute("USE user_info")
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS User (
+                user_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100),
+                age INT,
+                profession VARCHAR(100),
+                location VARCHAR(255),
+                education VARCHAR(255),
+                health_wellness VARCHAR(255),
+                important_relationships VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+        connection.commit()
+    except Error as e:
+        st.error(f"Error creating database or table: {e}")
+
+def insert_user_info(connection, user_info):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("USE user_info")
+            insert_query = """
+            INSERT INTO User (name, age, profession, location, education, health_wellness, important_relationships)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(insert_query, user_info)
+            connection.commit()
+            return cursor.lastrowid
+    except Error as e:
+        st.error(f"Error inserting user info: {e}")
+
+def get_all_users(connection):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("USE user_info")
+            cursor.execute("SELECT * FROM User")
+            return cursor.fetchall()
+    except Error as e:
+        st.error(f"Error retrieving user info: {e}")
+        return []
+
 # MongoDB 설정
 dbclient = MongoClient("mongodb://localhost:27017/")
 db = dbclient["chat_database"]
 collection = db["chat_logs"]
 
-# OpenAI API 키 설정
-load_dotenv()
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=OPENAI_API_KEY)
+st.title("ChatGPT-like clone")
 
 # LangChain의 PromptTemplate 설정
 template = """
@@ -32,160 +95,236 @@ Hello chatGPT. From now on, you will play the role of a "돌봄이" who provides
 The prior information of the elderly person you will be talking to is as follows. Name: "{name}", age: {age}, profession: "{profession}", location: "{location}", education: "{education}", health_wellness: "{health_wellness}", important_relationships: "{important_relationships}".
 """
 
-def get_user_info(user_id):
+# 시스템 프롬프트 생성 함수
+def create_system_prompt(user_info):
+    prompt = PromptTemplate.from_template(template)
+    return prompt.format(**user_info)
+
+# 음성 인식 함수
+def recognize_speech_from_mic():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.sidebar.write("Listening...")
+        audio = recognizer.listen(source)
+        st.sidebar.write("Recognizing...")
+        try:
+            text = recognizer.recognize_google(audio, language="ko-KR")
+            st.sidebar.write(f"Recognized Text: {text}")
+            return text
+        except sr.UnknownValueError:
+            st.sidebar.write("Google Speech Recognition could not understand audio")
+            return ""
+        except sr.RequestError:
+            st.sidebar.write("Could not request results from Google Speech Recognition service")
+            return ""
+
+# 텍스트를 음성으로 변환하는 함수
+def text_to_speech(text, file_path):
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="nova",
+        input=text
+    )
+    response.stream_to_file(file_path)
+
+def get_audio_length(file_path):
+    audio = AudioSegment.from_file(file_path)
+    return len(audio) / 1000  # 밀리초를 초로 변환
+
+def save_to_mongo(user_id, user_input, bot_response):
+    document = {
+        "user_id": user_id,
+        "timestamp": datetime.datetime.now(),
+        "user_input": user_input,
+        "bot_response": bot_response
+    }
+    collection.insert_one(document)
+
+def get_conversation_by_user_id(user_id):
+    return list(collection.find({"user_id": user_id}).sort("timestamp", -1))
+
+def load_conversation_to_memory(user_id, memory):
+    conversations = get_conversation_by_user_id(user_id)
+    for convo in conversations:
+        memory.save_context(inputs={"user": convo["user_input"]}, outputs={"assistant": convo["bot_response"]})
+
+# 탭 설정
+tabs = ["돌보미 앱 소개", "사용자 입력", "대화", "사용자 정보와 대화 내용"]
+page = st.sidebar.selectbox("Choose a page", tabs)
+
+# 돌보미 앱 소개
+if page == "돌보미 앱 소개":
+    st.write("# 돌보미 앱 소개")
+    st.markdown(
+        """
+        돌보미 앱은 노인분들을 위해 개발된 챗봇입니다.
+        이 챗봇은 친구처럼 대화를 나누고 심리 상담을 제공할 수 있습니다.
+        현재 날짜와 시간을 알려줄 수 있으며, 건강 정보와 관련된 조언도 제공합니다.
+        대화는 적절한 감정 지원과 정보를 혼합하여 제공합니다.
+        """
+    )
+
+# 사용자 입력 탭
+elif page == "사용자 입력":
+    st.header("User Information Input")
+
+    with st.form("user_form"):
+        name = st.text_input("Name")
+        age = st.number_input("Age", min_value=0, max_value=120, step=1)
+        profession = st.text_input("Profession")
+        location = st.text_input("Location")
+        education = st.text_input("Education")
+        health_wellness = st.text_input("Health Wellness")
+        important_relationships = st.text_input("Important Relationships")
+
+        # 폼 제출 버튼
+        submitted = st.form_submit_button("Submit")
+
+        if submitted:
+            user_info = (name, age, profession, location, education, health_wellness, important_relationships)
+            connection = create_connection()
+            if connection:
+                create_database_and_table(connection)
+                user_id = insert_user_info(connection, user_info)
+                if user_id:
+                    st.success("User information saved successfully!")
+                    # 세션 상태 업데이트 및 페이지 이동
+                    st.session_state["user_id"] = user_id
+                    st.session_state["page"] = "대화"
+                    st.experimental_rerun()  # 명시적으로 페이지를 새로고침하여 세션 상태를 반영
+                connection.close()
+            else:
+                st.error("Failed to connect to the database.")
+
+# 대화 탭
+elif page == "대화":
+    st.header("Chat with 돌봄이")
+
     connection = create_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("USE chatbot_service")
-            cursor.execute("SELECT * FROM User WHERE user_id = %s", (user_id,))
-            user_info = cursor.fetchone()
-        return user_info
-    except Error as e:
-        st.error(f"Error retrieving user info: {e}")
-    finally:
+    if connection:
+        users = get_all_users(connection)
         connection.close()
 
-def create_connection():
-    try:
-        connection = pymysql.connect(
-            host="localhost",
-            user="your_mysql_user",
-            password="your_mysql_password",
-            database="chatbot_service",
-            cursorclass=pymysql.cursors.DictCursor
-        )
-        return connection
-    except Error as e:
-        st.error(f"Error connecting to MySQL: {e}")
-        return None
+        if users:
+            user_names = [user['name'] for user in users]
+            selected_user_name = st.selectbox("Select User", user_names)
 
-# 사용자 정보 가져오기
-user_id = st.session_state.get("user_id")
-if user_id:
-    user_info = get_user_info(user_id)
-    if user_info:
-        # 사용자 정보 딕셔너리로 저장
-        user_info_dict = {
-            "name": user_info["name"],
-            "age": user_info["age"],
-            "profession": "retired teacher",
-            "location": user_info["address"],
-            "education": "Graduated from the Department of Mathematics Education at the University of Education",
-            "health_wellness": "Suffers from diabetes, suffers from high blood pressure, suffers from knee arthritis",
-            "important_relationships": "Wife, First son, daughter-in-law, and 1 grandson, Second daughter, son-in-law, 1 grandson, 1 granddaughter"
-        }
+            selected_user = next((user for user in users if user['name'] == selected_user_name), None)
+            if selected_user:
+                user_info = {
+                    "name": selected_user['name'],
+                    "age": selected_user['age'],
+                    "profession": selected_user['profession'],
+                    "location": selected_user['location'],
+                    "education": selected_user['education'],
+                    "health_wellness": selected_user['health_wellness'],
+                    "important_relationships": selected_user['important_relationships']
+                }
+                SYSTEM_PROMPT = create_system_prompt(user_info)
 
-        # 시스템 프롬프트 생성
-        SYSTEM_PROMPT = PromptTemplate.from_template(template).format(**user_info_dict)
+                if "conversing" not in st.session_state:
+                    st.session_state["conversing"] = False     
 
-        # 음성 인식 함수
-        def recognize_speech_from_mic():
-            recognizer = sr.Recognizer()
-            with sr.Microphone() as source:
-                st.sidebar.write("Listening...")
-                audio = recognizer.listen(source)
-                st.sidebar.write("Recognizing...")
-                try:
-                    text = recognizer.recognize_google(audio, language="ko-KR")
-                    st.sidebar.write(f"Recognized Text: {text}")
-                    return text
-                except sr.UnknownValueError:
-                    st.sidebar.write("Google Speech Recognition could not understand audio")
-                    return ""
-                except sr.RequestError:
-                    st.sidebar.write("Could not request results from Google Speech Recognition service")
-                    return ""
+                # 새로운 사용자를 선택했을 때 메시지 초기화
+                if "selected_user" not in st.session_state or st.session_state.selected_user != selected_user_name:
+                    st.session_state.selected_user = selected_user_name
+                    st.session_state.messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT}
+                    ]
 
-        # 텍스트를 음성으로 변환하는 함수
-        def text_to_speech(text, file_path):
-            response = client.audio.speech.create(
-                model="tts-1",
-                voice="nova",
-                input=text
-            )
-            response.stream_to_file(file_path)
+                if st.button("Start Conversation"):
+                    st.session_state['conversing'] = True
 
-        def get_audio_length(file_path):
-            audio = AudioSegment.from_file(file_path)
-            return len(audio) / 1000  # 밀리초를 초로 변환
+                # LangChain 설정
+                llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=OPENAI_API_KEY, streaming=True)
+                memory = ConversationBufferMemory(memory_key="history")
+                load_conversation_to_memory(selected_user['user_id'], memory)
+                conversation = ConversationChain(
+                    llm=llm,
+                    verbose=False,
+                    memory=memory
+                )
 
-        def save_to_mongo(user_id, user_input, bot_response):
-            document = {
-                "user_id": user_id,
-                "timestamp": datetime.datetime.now(),
-                "user_input": user_input,
-                "bot_response": bot_response
-            }
-            collection.insert_one(document)
+                if st.session_state['conversing']:
+                    user_id = selected_user['user_id']
+                    recognized_text = recognize_speech_from_mic()
+                    # 유저
+                    st.session_state.messages.append({"role": "user", "content": recognized_text})
+                    with st.chat_message("user"):
+                        st.markdown(recognized_text)
 
-        def get_conversation_by_user_id(user_id):
-            return list(collection.find({"user_id": user_id}).sort("timestamp", -1))
+                    # LangChain을 사용한 챗봇 응답
+                    assistant_response = conversation.predict(input=recognized_text)
+                    with st.chat_message("assistant"):
+                        st.markdown(assistant_response)
+                        # 응답을 음성으로 변환 및 저장
+                        audio_file_path = Path("response.mp3")
+                        text_to_speech(assistant_response, audio_file_path)
 
-        def load_conversation_to_memory(user_id, memory):
-            conversations = get_conversation_by_user_id(user_id)
-            for convo in conversations:
-                memory.save_context(inputs={"user": convo["user_input"]}, outputs={"assistant": convo["bot_response"]})
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                    
+                    # MongoDB에 대화 저장
+                    save_to_mongo(user_id, recognized_text, assistant_response)
+                    
+                    # 오디오 재생
+                    st.audio(str(audio_file_path), autoplay=True)
+                    audio_length = get_audio_length(audio_file_path)
+                    time.sleep(audio_length)
+                    st.experimental_rerun()
 
-        if "conversing" not in st.session_state:
-            st.session_state["conversing"] = False     
+                # 기존 대화 내용을 출력
+                for message in st.session_state.messages:
+                    if message["role"] != "system":
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
 
-        if st.button("start"):
-            st.session_state['conversing'] = True
+# 사용자 정보와 대화 내용 탭
+elif page == "사용자 정보와 대화 내용":
+    st.header("User Information and Conversations")
 
-        # 대화 기록
-        if "messages" not in st.session_state:
-            st.session_state.messages = [
-                {"role": "system", "content": SYSTEM_PROMPT}
-            ]
+    connection = create_connection()
+    if connection:
+        users = get_all_users(connection)
+        connection.close()
 
-        # LangChain 설정
-        llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=os.getenv("OPENAI_API_KEY"), streaming=True)
-        memory = ConversationBufferMemory(memory_key="history")
-        load_conversation_to_memory(user_id, memory)
-        conversation = ConversationChain(
-            llm=llm,
-            verbose=False,
-            memory=memory
-        )
+        if users:
+            user_names = [user['name'] for user in users]
+            selected_user_name = st.selectbox("Select User", user_names)
 
-        print(conversation.memory.load_memory_variables({})["history"])
+            selected_user = next((user for user in users if user['name'] == selected_user_name), None)
+            if selected_user:
+                user_info = {
+                    "name": selected_user['name'],
+                    "age": selected_user['age'],
+                    "profession": selected_user['profession'],
+                    "location": selected_user['location'],
+                    "education": selected_user['education'],
+                    "health_wellness": selected_user['health_wellness'],
+                    "important_relationships": selected_user['important_relationships']
+                }
 
-        conversations = get_conversation_by_user_id(user_id)
-        for convo in conversations:
-            st.session_state.messages.append({"role": "user", "content": convo["user_input"]})
-            st.session_state.messages.append({"role": "assistant", "content": convo["bot_response"]})
+                # 사용자 정보를 테이블 형태로 출력
+                st.write("## 사용자 정보")
+                user_info_df = pd.DataFrame(user_info.items(), columns=["Attribute", "Value"])
+                st.dataframe(user_info_df)
 
-        for message in st.session_state.messages:
-            if message["role"] != "system":
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
-
-        if st.session_state['conversing']:
-            recognized_text = recognize_speech_from_mic()
-            # 유저
-            st.session_state.messages.append({"role": "user", "content": recognized_text})
-            with st.chat_message("user"):
-                st.markdown(recognized_text)
-
-            # LangChain을 사용한 챗봇 응답
-            assistant_response = conversation.predict(input=recognized_text)
-            with st.chat_message("assistant"):
-                st.markdown(assistant_response)
-                # 응답을 음성으로 변환 및 저장
-                audio_file_path = Path("response.mp3")
-                text_to_speech(assistant_response, audio_file_path)
-
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-            
-            # MongoDB에 대화 저장
-            save_to_mongo(user_id, recognized_text, assistant_response)
-            
-            # 오디오 재생
-            st.audio(str(audio_file_path), autoplay=True)
-            audio_length = get_audio_length(audio_file_path)
-            time.sleep(audio_length)
-            st.experimental_rerun()
-    else:
-        st.error("User information not found. Please go back to the information input page.")
-else:
-    st.error("User not logged in. Please go back to the information input page.")
+                # 날짜별 대화 내용을 선택하여 출력
+                st.write("## MongoDB 대화 내용")
+                user_id = selected_user['user_id']
+                mongo_conversations = get_conversation_by_user_id(user_id)
+                
+                if mongo_conversations:
+                    # 대화 기록에서 날짜 추출
+                    dates = sorted(list(set([convo["timestamp"].date() for convo in mongo_conversations])))
+                    selected_date = st.selectbox("날짜 선택", dates)
+                    
+                    # 선택한 날짜의 대화만 필터링
+                    selected_conversations = [convo for convo in mongo_conversations if convo["timestamp"].date() == selected_date]
+                    
+                    for convo in selected_conversations:
+                        st.write(f"**시간**: {convo['timestamp'].time()}")
+                        st.write(f"**User**: {convo['user_input']}")
+                        st.write(f"**Bot**: {convo['bot_response']}")
+                        st.write("---")
+                else:
+                    st.write("No conversations found.")

@@ -265,8 +265,6 @@ elif page == "대화":
 
                             # LangChain을 사용한 챗봇 응답
                             assistant_response = st.session_state.conversation.predict(input=user_input)
-                            st.write("AI Response:")
-                            st.write(assistant_response)
                             with st.chat_message("assistant"):
                                 st.markdown(assistant_response)
                                 # 응답을 음성으로 변환 및 저장
@@ -368,7 +366,7 @@ elif page == "사용자 정보와 대화 내용":
                     selected_conversations = [convo for convo in mongo_conversations if convo["timestamp"].date() == selected_date]
                     
                     for convo in selected_conversations:
-                        st.write(f"**시간**: {convo['timestamp'].time()}")
+                        st.write(f"**시간**: {convo['timestamp'].strftime('%H:%M:%S')}")
                         st.write(f"**사용자**: {convo['user_input']}")
                         st.write(f"**돌보미**: {convo['bot_response']}")
                         st.write("---")

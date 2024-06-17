@@ -1,5 +1,4 @@
 import streamlit as st
-
 import pymysql
 from pymysql import Error
 from openai import OpenAI
@@ -229,14 +228,12 @@ elif page == "대화":
                 SYSTEM_PROMPT = create_system_prompt(user_info)
 
                 if "conversing" not in st.session_state:
-                    st.session_state["conversing"] = False     
+                    st.session_state["conversing"] = False
 
                 # 새로운 사용자를 선택했을 때 메시지 초기화 및 대화 기록 불러오기
                 if "selected_user" not in st.session_state or st.session_state.selected_user != selected_user_name:
                     st.session_state.selected_user = selected_user_name
-                    st.session_state.messages = [
-                        {"role": "system", "content": SYSTEM_PROMPT}
-                    ]
+                    st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
                     st.session_state['conversing'] = False
 
                     # MongoDB에서 대화 기록 불러오기
@@ -245,15 +242,16 @@ elif page == "대화":
                 if st.button("대화 시작"):
                     st.session_state['conversing'] = True
 
-                # LangChain 설정
-                llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=OPENAI_API_KEY, streaming=True)
-                memory = ConversationBufferMemory(memory_key="history")
-                load_conversation_to_memory(selected_user['user_id'], memory)
-                conversation = ConversationChain(
-                    llm=llm,
-                    verbose=False,
-                    memory=memory
-                )
+                    # LangChain 설정
+                    llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=OPENAI_API_KEY, streaming=True)
+                    memory = ConversationBufferMemory(memory_key="history")
+                    memory.save_context(inputs={"user": ""}, outputs={"assistant": SYSTEM_PROMPT})
+                    load_conversation_to_memory(selected_user['user_id'], memory)
+                    st.session_state.conversation = ConversationChain(
+                        llm=llm,
+                        verbose=False,
+                        memory=memory
+                    )
 
                 if st.session_state['conversing']:
                     user_id = selected_user['user_id']
@@ -261,21 +259,19 @@ elif page == "대화":
                     if st.button("Send"):
                         if user_input:
                             # 유저
-                            st.session_state.messages.insert(0, {"role": "user", "content": user_input})
+                            st.session_state.messages.append({"role": "user", "content": user_input})
                             with st.chat_message("user"):
                                 st.markdown(user_input)
 
                             # LangChain을 사용한 챗봇 응답
-                            assistant_response = conversation.predict(input=user_input)
-                            st.write("AI Response:")
-                            st.write(assistant_response)
+                            assistant_response = st.session_state.conversation.predict(input=user_input)
                             with st.chat_message("assistant"):
                                 st.markdown(assistant_response)
                                 # 응답을 음성으로 변환 및 저장
                                 audio_file_path = Path("response.mp3")
                                 text_to_speech(assistant_response, audio_file_path)
 
-                            st.session_state.messages.insert(0, {"role": "assistant", "content": assistant_response})
+                            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
                             
                             # MongoDB에 대화 저장
                             save_to_mongo(user_id, user_input, assistant_response)
@@ -287,7 +283,7 @@ elif page == "대화":
                             st.experimental_rerun()
 
                 # 기존 대화 내용을 역순으로 출력
-                for message in reversed(st.session_state.messages):
+                for message in st.session_state.messages:
                     if message["role"] != "system":
                         with st.chat_message(message["role"]):
                             st.markdown(message["content"])
@@ -370,10 +366,9 @@ elif page == "사용자 정보와 대화 내용":
                     selected_conversations = [convo for convo in mongo_conversations if convo["timestamp"].date() == selected_date]
                     
                     for convo in selected_conversations:
-                        st.write(f"**시간**: {convo['timestamp'].time()}")
+                        st.write(f"**시간**: {convo['timestamp'].strftime('%H:%M:%S')}")
                         st.write(f"**사용자**: {convo['user_input']}")
                         st.write(f"**돌보미**: {convo['bot_response']}")
                         st.write("---")
                 else:
                     st.write("No conversations found.")
-

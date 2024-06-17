@@ -15,6 +15,9 @@ import os
 from dotenv import load_dotenv
 from pydub import AudioSegment
 
+import speech_recognition as sr
+
+
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -111,6 +114,28 @@ def text_to_speech(text, file_path):
     )
     response.stream_to_file(file_path)
 
+# 음성 인식 함수
+def recognize_speech_from_mic():
+    recognizer = sr.Recognizer()
+    try:
+        with sr.Microphone() as source:
+            st.sidebar.write("Listening...")
+            audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)  # 시간 제한 설정
+            st.sidebar.write("Recognizing...")
+            try:
+                text = recognizer.recognize_google(audio, language="ko-KR")
+                st.sidebar.write(f"Recognized Text: {text}")
+                return text
+            except sr.UnknownValueError:
+                st.sidebar.write("Google Speech Recognition could not understand audio")
+                return ""
+            except sr.RequestError:
+                st.sidebar.write("Could not request results from Google Speech Recognition service")
+                return ""
+    except Exception as e:
+        st.sidebar.write(f"Error: {e}")
+        return ""
+    
 def get_audio_length(file_path):
     audio = AudioSegment.from_file(file_path)
     return len(audio) / 1000  # 밀리초를 초로 변환
@@ -255,32 +280,32 @@ elif page == "대화":
 
                 if st.session_state['conversing']:
                     user_id = selected_user['user_id']
-                    user_input = st.text_input("Enter your message:")
-                    if st.button("Send"):
-                        if user_input:
-                            # 유저
-                            st.session_state.messages.append({"role": "user", "content": user_input})
-                            with st.chat_message("user"):
-                                st.markdown(user_input)
+                    # user_input = st.text_input("Enter your message:")
+                    recognized_text = recognize_speech_from_mic()
+                    if recognized_text:
+                        # 유저
+                        st.session_state.messages.append({"role": "user", "content": recognized_text})
+                        with st.chat_message("user"):
+                            st.markdown(recognized_text)
 
-                            # LangChain을 사용한 챗봇 응답
-                            assistant_response = st.session_state.conversation.predict(input=user_input)
-                            with st.chat_message("assistant"):
-                                st.markdown(assistant_response)
-                                # 응답을 음성으로 변환 및 저장
-                                audio_file_path = Path("response.mp3")
-                                text_to_speech(assistant_response, audio_file_path)
+                        # LangChain을 사용한 챗봇 응답
+                        assistant_response = st.session_state.conversation.predict(input=recognized_text)
+                        with st.chat_message("assistant"):
+                            st.markdown(assistant_response)
+                            # 응답을 음성으로 변환 및 저장
+                            audio_file_path = Path("response.mp3")
+                            text_to_speech(assistant_response, audio_file_path)
 
-                            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
                             
-                            # MongoDB에 대화 저장
-                            save_to_mongo(user_id, user_input, assistant_response)
+                        # MongoDB에 대화 저장
+                        save_to_mongo(user_id, recognized_text, assistant_response)
                             
-                            # 오디오 재생
-                            st.audio(str(audio_file_path), autoplay=True)
-                            audio_length = get_audio_length(audio_file_path)
-                            time.sleep(audio_length)
-                            st.experimental_rerun()
+                        # 오디오 재생
+                        st.audio(str(audio_file_path), autoplay=True)
+                        audio_length = get_audio_length(audio_file_path)
+                        time.sleep(audio_length)
+                        st.experimental_rerun()
 
                 # 기존 대화 내용을 역순으로 출력
                 for message in st.session_state.messages:

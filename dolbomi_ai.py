@@ -20,6 +20,7 @@ import speech_recognition as sr
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 
 # MySQL 연결 설정
 def create_connection():
@@ -27,7 +28,7 @@ def create_connection():
         connection = pymysql.connect(
             host="127.0.0.1",
             user="root",
-            password="1234",
+            password=MYSQL_PASSWORD,
             cursorclass=pymysql.cursors.DictCursor
         )
         return connection
@@ -268,7 +269,7 @@ elif page == "대화":
                     st.session_state['conversing'] = True
 
                     # LangChain 설정
-                    llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=OPENAI_API_KEY, streaming=True)
+                    llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, streaming=True)
                     memory = ConversationBufferMemory(memory_key="history")
                     memory.save_context(inputs={"user": ""}, outputs={"assistant": SYSTEM_PROMPT})
                     load_conversation_to_memory(selected_user['user_id'], memory)
